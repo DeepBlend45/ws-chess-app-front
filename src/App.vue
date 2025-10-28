@@ -1,191 +1,159 @@
 <template>
-  <h2 v-if="!winner">現在は {{ turn }} のターンです</h2>
-  <h2 v-else>{{ winner }} の勝利！</h2>
-  <h4 v-if="!winner">選択中：{{ selected }}</h4>
-  <div class="board">
-    <div
-      v-for="(square, index) in board"
-      :key="index"
-      class="cell"
-      @click="select(index)"
-    >
-      {{ square }}
+  <div class="app">
+    <h1>チェスアプリ</h1>
+
+    <div class="connection">
+      <input v-model="roomId" placeholder="ルームIDを入力" />
+      <button @click="connect" :disabled="isConnected">接続</button>
+      <p v-if="playerColor">あなたの色: {{ playerColor }}</p>
     </div>
+
+    <div class="board" :class="{ locked: !!winner }">
+      <div
+        v-for="(piece, index) in board"
+        :key="index"
+        class="square"
+        :class="{ 
+          selected: index === selected,
+          whiteSquare: (Math.floor(index / 8) + index) % 2 === 0,
+          blackSquare: (Math.floor(index / 8) + index) % 2 !== 0
+        }"
+        @click="handleSquareClick(index)"
+      >
+        {{ piece }}
+      </div>
+    </div>
+
+    <div v-if="winner" class="winner">勝者: {{ winner }}</div>
   </div>
 </template>
 
-<script setup lang="ts">
+<script lang="ts" setup>
 import { ref } from "vue";
 import { createSocket } from "./websocket";
-import type { ServerMessage } from "./types";
+import { initBoard, movePiece, checkWinner, canMove, isPlayerPiece } from "./logic/board";
+import type { MoveData } from "./logic/types";
 
-const board = ref<string[]>(initBoard());
+const board = ref(initBoard());
 const selected = ref<number | null>(null);
-const turn = ref<"white" | "black">("white"); 
+const playerColor = ref<"white" | "black" | null>(null);
 const winner = ref<"white" | "black" | null>(null);
+const socket = ref<ReturnType<typeof createSocket> | null>(null);
+const roomId = ref("");
+const isConnected = ref(false);
 
-const socket = createSocket("test-room", (data:ServerMessage) => {
-  if (data.type === "move") {
-    movePiece(data.from, data.to);
-    turn.value = turn.value === "white" ? "black" : "white"
-    console.log("Turn Value: ",turn.value);
-  }
-});
+function connect() {
+  if (!roomId.value) return;
 
-function initBoard() {
-  return [
-    "♖","♘","♗","♕","♔","♗","♘","♖",
-    "♙","♙","♙","♙","♙","♙","♙","♙",
-    "","","","","","","","",
-    "","","","","","","","",
-    "","","","","","","","",
-    "","","","","","","","",
-    "♟","♟","♟","♟","♟","♟","♟","♟",
-    "♜","♞","♝","♛","♚","♝","♞","♜",
-    
-  ];
+  socket.value = createSocket(roomId.value, (data) => {
+    // サーバーからのメッセージ種別を判定
+    if (data.type === "assign_color") {
+      playerColor.value = data.color;
+      isConnected.value = true;
+      return;
+    }
+
+    if (data.type === "move") {
+      board.value = movePiece(board.value, data.from, data.to);
+      winner.value = checkWinner(board.value);
+    }
+  });
 }
 
-function select(index:number) {
-  if (winner.value) return;
+function handleSquareClick(index: number) {
+  if (!playerColor.value || winner.value) return;
 
   const piece = board.value[index];
-  const myColor = socket.myColor();
-  console.log(myColor);
-  if(!myColor) return;
 
   if (selected.value === null) {
-    if (( pieceIsWhite(piece) && myColor === "white") ||
-        (  pieceIsBlack(piece) && myColor === "black")) {
+    // 駒を選択
+    if (piece && isPlayerPiece(piece, playerColor.value)) {
       selected.value = index;
     }
   } else {
-    if (isValidMove(board.value[selected.value],selected.value,index,board.value)){
-      socket.sendMove(selected.value, index);
-      movePiece(selected.value, index);
-      turn.value = turn.value === "white" ? "black" : "white";
+    const from = selected.value;
+    const to = index;
+
+    // 同じマスを再度クリック → キャンセル
+    if (from === to) {
       selected.value = null;
-      const result = checkWinner(board.value);
-      if (result) {
-        winner.value = result;
-      }
-    } else {
-      selected.value = null;
+      return;
     }
-    
+
+    const piece = board.value[from];
+
+    // 自分の駒しか動かせない
+    if (!isPlayerPiece(piece, playerColor.value)) {
+      selected.value = null;
+      return;
+    }
+
+    // 合法手か判定
+    if (canMove(from, to, board.value)) {
+      // ローカル更新
+      board.value = movePiece(board.value, from, to);
+      winner.value = checkWinner(board.value);
+
+      // WebSocket送信
+      socket.value?.sendMove(from, to);
+    }
+
+    selected.value = null;
   }
 }
-
-function movePiece(from:number, to:number) {
-  const piece: string = board.value[from];
-  board.value[to] = piece;
-  board.value[from] = "";
-}
-
-// ブラウザ表示に合わせて白黒を逆に定義
-function pieceIsWhite(piece: string) {
-  // ブラウザ上で白っぽく見える駒を「白」として扱う
-  return ["♟","♜","♞","♝","♛","♚"].includes(piece);
-}
-
-function pieceIsBlack(piece: string) {
-  // ブラウザ上で黒っぽく見える駒を「黒」として扱う
-  return ["♙","♖","♘","♗","♕","♔"].includes(piece);
-}
-
-// ポーンの移動判定も逆向きにする
-function isValidMove(piece: string, from: number, to: number, board: string[]): boolean {
-  const fromRow = Math.floor(from / 8);
-  const fromCol = from % 8;
-  const toRow = Math.floor(to / 8);
-  const toCol = to % 8;
-  const target = board[to];
-
-  // 同じ色の駒を取れない
-  if (pieceIsWhite(piece) && pieceIsWhite(target)) return false;
-  if (pieceIsBlack(piece) && pieceIsBlack(target)) return false;
-
-  const rowDiff = toRow - fromRow;
-  const colDiff = toCol - fromCol;
-
-  switch (piece) {
-    case "♟": // ブラウザ上白ポーン（上向き）
-      if (colDiff === 0 && rowDiff === -1 && target === "") return true;
-      if (colDiff === 0 && rowDiff === -2 && fromRow === 6 && board[from - 8] === "" && target === "") return true;
-      if (Math.abs(colDiff) === 1 && rowDiff === -1 && pieceIsBlack(target)) return true;
-      return false;
-
-    case "♙": // ブラウザ上黒ポーン（下向き）
-      if (colDiff === 0 && rowDiff === 1 && target === "") return true;
-      if (colDiff === 0 && rowDiff === 2 && fromRow === 1 && board[from + 8] === "" && target === "") return true;
-      if (Math.abs(colDiff) === 1 && rowDiff === 1 && pieceIsWhite(target)) return true;
-      return false;
-
-    // ルーク・ナイト・ビショップ・クイーン・キングは従来通り
-    case "♖": case "♜":
-      if (rowDiff === 0 || colDiff === 0) return isPathClear(fromRow, fromCol, toRow, toCol, board);
-      return false;
-
-    case "♘": case "♞":
-      return (Math.abs(rowDiff) === 2 && Math.abs(colDiff) === 1) || (Math.abs(rowDiff) === 1 && Math.abs(colDiff) === 2);
-
-    case "♗": case "♝":
-      if (Math.abs(rowDiff) === Math.abs(colDiff)) return isPathClear(fromRow, fromCol, toRow, toCol, board);
-      return false;
-
-    case "♕": case "♛":
-      if (rowDiff === 0 || colDiff === 0 || Math.abs(rowDiff) === Math.abs(colDiff)) return isPathClear(fromRow, fromCol, toRow, toCol, board);
-      return false;
-
-    case "♔": case "♚":
-      return Math.abs(rowDiff) <= 1 && Math.abs(colDiff) <= 1;
-
-    default:
-      return false;
-  }
-}
-
-
-// ルーク・ビショップ・クイーンの経路が空か確認
-function isPathClear(fromRow: number, fromCol: number, toRow: number, toCol: number, board: string[]): boolean {
-  const rowStep = toRow === fromRow ? 0 : toRow > fromRow ? 1 : -1;
-  const colStep = toCol === fromCol ? 0 : toCol > fromCol ? 1 : -1;
-
-  let r = fromRow + rowStep;
-  let c = fromCol + colStep;
-
-  while (r !== toRow || c !== toCol) {
-    if (board[r * 8 + c] !== "") return false;
-    r += rowStep;
-    c += colStep;
-  }
-
-  return true;
-}
-
-function checkWinner(board: string[]): "white" | "black" | null {
-  const hasWhiteKing = board.includes("♔");
-  const hasBlackKing = board.includes("♚");
-
-  if (!hasWhiteKing) return "black";
-  if (!hasBlackKing) return "white";
-  return null;
-}
-
 </script>
 
-<style>
+<style scoped>
+.app {
+  text-align: center;
+  font-family: sans-serif;
+}
+
+.connection {
+  margin-bottom: 20px;
+}
+
 .board {
   display: grid;
-  grid-template-columns: repeat(8, 50px);
-  width: 400px;
-}
-.cell {
-  border: 1px solid #000;
-  height: 50px;
-  display: flex;
-  align-items: center;
+  grid-template-columns: repeat(8, 60px);
+  grid-template-rows: repeat(8, 60px);
   justify-content: center;
+  margin: 20px auto;
+  border: 2px solid #333;
+}
+
+.square {
+  width: 60px;
+  height: 60px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 26px;
   cursor: pointer;
+  user-select: none;
+}
+
+.whiteSquare {
+  background-color: #222;
+  color: #fff;
+}
+
+.blackSquare {
+  background-color: #ddd;
+  color: #000;
+}
+
+.selected {
+  outline: 3px solid red;
+}
+
+.locked .square {
+  pointer-events: none;
+}
+
+.winner {
+  font-size: 24px;
+  color: green;
+  margin-top: 20px;
 }
 </style>

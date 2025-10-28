@@ -1,26 +1,76 @@
+// ==============================
+// websocket.ts
+// ==============================
 
-import type { ServerMessage , MoveData } from "./types";
+export type PlayerColor = "white" | "black";
 
-export function createSocket(roomId:string, onMessage:(data:ServerMessage)=>void) {
-    const socket = new WebSocket(`ws://localhost:8000/ws/${roomId}`);
+export interface MoveData {
+  type: "move";
+  from: number;
+  to: number;
+}
 
-    let myColor: "white" | "black" | null = null;
-  
-    socket.onmessage = (event) => {
-      const data:ServerMessage = JSON.parse(event.data);
-      console.log("Received Data: ",data);
+export interface AssignColor {
+  type: "assign_color";
+  color: PlayerColor;
+}
+
+export type ServerMessage = MoveData | AssignColor;
+
+export function createSocket(
+  roomId: string,
+  onMessage: (data: ServerMessage) => void
+) {
+  const ws = new WebSocket(`ws://localhost:8000/ws/${roomId}`);
+  let assignedColor: PlayerColor | null = null;
+
+  // サーバーからの受信
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data) as ServerMessage;
+
+      // 色の割り当てイベント
       if (data.type === "assign_color") {
-        myColor = data.color;
+        assignedColor = data.color;
       }
+
       onMessage(data);
-    };
-  
-    function sendMove(from:number, to:number) {
-      if (!myColor) return;
-      const move: MoveData = { type:"move",from ,to};
-      socket.send(JSON.stringify(move));
+    } catch (e) {
+      console.error("WebSocket parse error:", e);
     }
-  
-    return { sendMove, myColor: () => myColor };
-  }
-  
+  };
+
+  // 接続時
+  ws.onopen = () => {
+    console.log("✅ WebSocket connected:", roomId);
+  };
+
+  // 接続エラー
+  ws.onerror = (err) => {
+    console.error("WebSocket error:", err);
+  };
+
+  // 接続終了
+  ws.onclose = () => {
+    console.log("❌ WebSocket closed:", roomId);
+  };
+
+  return {
+    sendMove(from: number, to: number) {
+      if (ws.readyState === WebSocket.OPEN) {
+        const move: MoveData = { type: "move", from, to };
+        ws.send(JSON.stringify(move));
+      } else {
+        console.warn("WebSocket not connected, cannot send move");
+      }
+    },
+
+    myColor(): PlayerColor | null {
+      return assignedColor;
+    },
+
+    close() {
+      ws.close();
+    },
+  };
+}
