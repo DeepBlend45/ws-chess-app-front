@@ -1,5 +1,5 @@
 // src/logic/board.ts
-import { Piece } from "./types";
+import type { Piece } from "./types";
 import { isPathClear, isValidMove, isWhitePiece } from "./move";
 
 /**
@@ -23,7 +23,7 @@ export function initBoard(): Piece[] {
  */
 export function movePiece(board: Piece[], from: number, to: number): Piece[] {
   const newBoard = [...board];
-  newBoard[to] = newBoard[from];
+  newBoard[to] = newBoard[from]!;
   newBoard[from] = "";
   return newBoard;
 }
@@ -54,5 +54,5 @@ export function checkWinner(board: Piece[]): "white" | "black" | null {
  * 駒がプレイヤーの色と一致するか確認
  */
 export function isPlayerPiece(piece: Piece, color: "white" | "black"): boolean {
-  return piece && isWhitePiece(piece) === (color === "white");
+  return piece !== "" && isWhitePiece(piece) === (color === "white");
 }
